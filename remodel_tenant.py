@@ -290,23 +290,25 @@ class RemodelTenant(Script):
         description = "Create Tenant Models from Variables"
         commit_default = False
         scheduling_enabled = False
-        
+
+    remodel_all = BooleanVar(
+        label="Remodel All Tenants",
+        description="Process all active tenants instead of a single tenant",
+        default=False
+    )
+
     tenant_name = ObjectVar(
         label="Tenant Name",
-        description="",
+        description="Select a specific tenant (ignored if 'Remodel All Tenants' is checked)",
         model=Tenant,
+        required=False,
         query_params={
             'status': 'active'
         }
     )
-    
-    def run(self, data, commit):
-        
-        saas_site_id = Site.objects.get(id=2)
-        tunnel_cidr_len = 30
-        primary_device_name = 'vsrx-use2-01'# update if device names change in dev/prod
-        secondary_device_name = 'vsrx-usw2-01' # update if device names change in dev/prod
-        tenant_name = data['tenant_name']
+
+    def process_tenant(self, tenant_name, saas_site_id, tunnel_cidr_len, primary_device_name, secondary_device_name):
+        """Process a single tenant"""
         tenant = Tenant.objects.get(name=tenant_name)
         tenant_group = tenant.group
         tenant_group_name = tenant.group.name
@@ -590,3 +592,49 @@ class RemodelTenant(Script):
             dnat_ip.custom_field_data["client_host_port"] = values["hostPort"]
             dnat_ip.save()
             self.log_success(f"Created a new DNAT IP for: ({dnat_ip} - {host_ip} - {dnat_ip.description})")
+
+    def run(self, data, commit):
+        """Main entry point for the script"""
+        saas_site_id = Site.objects.get(id=2)
+        tunnel_cidr_len = 30
+        primary_device_name = 'vsrx-use2-01'  # update if device names change in dev/prod
+        secondary_device_name = 'vsrx-usw2-01'  # update if device names change in dev/prod
+
+        remodel_all = data.get('remodel_all', False)
+
+        if remodel_all:
+            # Process all active tenants
+            tenants = Tenant.objects.filter(status='active')
+            total_tenants = tenants.count()
+            self.log_info(f"Processing {total_tenants} active tenants...")
+
+            processed = 0
+            failed = 0
+
+            for tenant in tenants:
+                try:
+                    self.log_info(f"\n{'='*60}")
+                    self.log_info(f"Processing tenant: {tenant.name}")
+                    self.log_info(f"{'='*60}")
+                    self.process_tenant(tenant.name, saas_site_id, tunnel_cidr_len, primary_device_name, secondary_device_name)
+                    processed += 1
+                    self.log_success(f"Successfully processed tenant: {tenant.name} ({processed}/{total_tenants})")
+                except Exception as err:
+                    failed += 1
+                    self.log_failure(f"Failed to process tenant {tenant.name}: {err}")
+                    continue
+
+            self.log_info(f"\n{'='*60}")
+            self.log_info(f"Remodeling complete!")
+            self.log_info(f"Successfully processed: {processed}/{total_tenants}")
+            if failed > 0:
+                self.log_warning(f"Failed: {failed}/{total_tenants}")
+            self.log_info(f"{'='*60}")
+        else:
+            # Process single tenant
+            tenant_name = data.get('tenant_name')
+            if not tenant_name:
+                raise AbortScript("Please select a tenant or check 'Remodel All Tenants'")
+
+            self.log_info(f"Processing single tenant: {tenant_name.name}")
+            self.process_tenant(tenant_name.name, saas_site_id, tunnel_cidr_len, primary_device_name, secondary_device_name)
